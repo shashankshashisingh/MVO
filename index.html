@@ -1,0 +1,827 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>:root{color-scheme:light}body{margin:0}[hidden]{display:none!important}</style></head><body>
+<title>Mean-Variance Optimizer</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Instrument+Sans:wght@400;500;600&display=swap">
+<style>
+/* Layout: a narrow control rail on the left, results on the right (stat strip, frontier chart, allocation table, correlation grid); stacks under 900px. */
+:root{
+  --bg:#f1f4f2; --surface:#fbfcfb; --ink:#16201e; --ink2:#46534f; --muted:#62706b; --line:#d8dedb;
+  --accent:#0f6b5c; --accent-soft:#dcebe6; --on-accent:#ffffff;
+  --warn:#b4532a; --pos:#2a6fb0; --on-strong:#ffffff; --bad:#a63a2a; --good:#1f7a4d;
+  --font-ui:"Instrument Sans",system-ui,-apple-system,"Segoe UI",sans-serif;
+  --font-num:"IBM Plex Mono",ui-monospace,SFMono-Regular,Menlo,monospace;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#0e1514; --surface:#162120; --ink:#e5eeea; --ink2:#a8b8b2; --muted:#8a9b95; --line:#273633;
+    --accent:#4fc3a6; --accent-soft:#1b3a33; --on-accent:#05201a;
+    --warn:#e38b5f; --pos:#3b7fb8; --on-strong:#f2f6f9; --bad:#f08a76; --good:#5cc78f; color-scheme:dark;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#0e1514; --surface:#162120; --ink:#e5eeea; --ink2:#a8b8b2; --muted:#8a9b95; --line:#273633;
+  --accent:#4fc3a6; --accent-soft:#1b3a33; --on-accent:#05201a;
+  --warn:#e38b5f; --pos:#3b7fb8; --on-strong:#f2f6f9; --bad:#f08a76; --good:#5cc78f; color-scheme:dark;
+}
+body{background:var(--bg);color:var(--ink);font-family:var(--font-ui);font-size:14px;line-height:1.45}
+*{box-sizing:border-box}
+.wrap{max-width:1320px;margin:0 auto;padding-block:20px 40px;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px))}
+.top{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:flex-end;gap:12px;margin-bottom:20px}
+h1{font-size:24px;line-height:1.15;font-weight:600;margin:0;letter-spacing:-.01em;text-wrap:balance}
+.sub{margin:6px 0 0;color:var(--ink2);max-width:60ch}
+h2{font-size:11px;font-weight:600;letter-spacing:.09em;text-transform:uppercase;color:var(--muted);margin:0 0 10px}
+h3{font-size:15px;font-weight:600;margin:0}
+.badge{font-family:var(--font-num);font-size:12px;color:var(--ink2);border:1px solid var(--line);background:var(--surface);padding:5px 10px;border-radius:4px;max-width:100%}
+.badge b{color:var(--accent);font-weight:500}
+.app{display:grid;grid-template-columns:minmax(290px,350px) minmax(0,1fr);gap:24px;align-items:start}
+.rail{background:var(--surface);border:1px solid var(--line);border-radius:6px;padding:18px;display:flex;flex-direction:column;gap:22px;min-width:0}
+.rail section{display:flex;flex-direction:column;gap:10px;min-width:0}
+.rail section+section{border-top:1px solid var(--line);padding-top:18px}
+.results{display:flex;flex-direction:column;gap:20px;min-width:0}
+.f{display:flex;flex-direction:column;gap:4px;min-width:0}
+.f label,.lbl{font-size:12px;color:var(--ink2)}
+.row{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+input[type=text],input[type=number],select,textarea{width:100%;min-width:0;font:inherit;color:var(--ink);background:var(--bg);border:1px solid var(--line);border-radius:4px;padding:0 10px;height:34px}
+textarea{height:auto;padding:8px 10px;resize:vertical;font-family:var(--font-num);font-size:12.5px}
+input[type=number],input.cell{font-family:var(--font-num);font-size:13px}
+input:focus-visible,select:focus-visible,textarea:focus-visible,button:focus-visible,summary:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+.check{display:flex;align-items:center;gap:8px;font-size:13px}
+.check input{width:16px;height:16px;accent-color:var(--accent)}
+.btn{font:inherit;font-weight:600;height:36px;padding:0 14px;border-radius:4px;border:1px solid var(--accent);background:var(--accent);color:var(--on-accent);cursor:pointer}
+.btn:disabled{opacity:.55;cursor:progress}
+.btn.ghost{background:transparent;color:var(--accent)}
+.btn.small{height:30px;font-size:13px;padding:0 10px}
+.linkbtn{font:inherit;background:none;border:0;padding:0;color:var(--accent);text-decoration:underline;cursor:pointer;text-align:left;width:fit-content}
+details{border:1px solid var(--line);border-radius:4px;padding:8px 10px}
+summary{cursor:pointer;font-size:13px;color:var(--ink2)}
+details[open] summary{margin-bottom:10px}
+details>*+*{margin-top:8px}
+.cmd{margin:0;font-family:var(--font-num);font-size:12px;line-height:1.5;background:var(--bg);border:1px solid var(--line);border-radius:4px;padding:8px 10px;white-space:pre-wrap;word-break:break-all;user-select:all}
+.steps{margin:0;padding-left:18px;font-size:13px;display:flex;flex-direction:column;gap:6px}
+.steps code,.hint code{font-family:var(--font-num);font-size:12px;background:var(--bg);padding:1px 4px;border-radius:3px}
+.hint{font-size:12px;color:var(--muted);margin:0}
+.msgs{display:flex;flex-direction:column;gap:8px}
+.msg{border:1px solid var(--line);border-left:3px solid var(--warn);background:var(--surface);padding:9px 12px;border-radius:4px;font-size:13px}
+.msg.err{border-left-color:var(--bad)}
+.msg.info{border-left-color:var(--accent)}
+.stats{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}
+.stat{display:flex;flex-direction:column;gap:2px;padding:2px 0 2px 12px;border-left:2px solid var(--line)}
+.stat:first-child{border-left-color:var(--accent)}
+.stat .k{font-size:12px;color:var(--ink2)}
+.stat .v{font-family:var(--font-num);font-size:28px;font-weight:500;letter-spacing:-.02em;line-height:1.1}
+.stat .s{font-size:12px;color:var(--muted)}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:6px;padding:16px;min-width:0}
+.card header{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:baseline;gap:6px 16px;margin-bottom:12px}
+.legend{display:flex;flex-wrap:wrap;gap:4px 14px;font-size:12px;color:var(--ink2)}
+.legend span{display:inline-flex;align-items:center;gap:6px}
+.sw{display:inline-block;width:12px;height:12px}
+.chartbox{position:relative}
+svg.chart{display:block;width:100%;height:auto;touch-action:pan-y}
+svg.chart text{font-family:var(--font-num);font-size:11px;fill:var(--ink2)}
+svg.chart .axt{fill:var(--muted)}
+.tip{position:absolute;pointer-events:none;background:var(--ink);color:var(--bg);font-size:12px;line-height:1.35;padding:7px 9px;border-radius:4px;max-width:240px;z-index:3;box-shadow:0 2px 8px rgba(0,0,0,.25)}
+.tip b{font-weight:600}
+.tip .mono{font-family:var(--font-num)}
+.scroll{overflow-x:auto}
+table{border-collapse:collapse;width:100%}
+.alloc th,.alloc td{padding:7px 8px;text-align:right;border-bottom:1px solid var(--line);white-space:nowrap;font-size:13px}
+.alloc thead th{font-size:11px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);vertical-align:bottom}
+.alloc th:first-child,.alloc td:first-child{text-align:left}
+.alloc tbody th{font-weight:600}
+.alloc tfoot td,.alloc tfoot th{border-bottom:0;font-weight:600}
+.num{font-family:var(--font-num);font-variant-numeric:tabular-nums}
+.alloc input.cell{width:76px;height:28px;text-align:right;padding:0 6px}
+.wcell{display:flex;align-items:center;gap:10px;justify-content:flex-end;min-width:200px}
+.track{position:relative;flex:1;height:8px;min-width:110px;background:var(--bg);border-radius:2px}
+.track .bar{position:absolute;top:0;bottom:0;border-radius:2px;background:var(--accent)}
+.track .bar.neg{background:var(--warn)}
+.track .zero{position:absolute;top:-3px;bottom:-3px;width:1px;background:var(--muted)}
+.wcell .num{width:58px;text-align:right}
+.heat{border-collapse:separate;border-spacing:2px;width:auto}
+.heat th{font-size:12px;font-weight:600;color:var(--ink2);padding:2px 6px;white-space:nowrap}
+.heat thead th{text-align:center}
+.heat tbody th{text-align:right}
+.heat td{font-family:var(--font-num);font-size:12px;text-align:center;min-width:46px;height:34px;border-radius:3px;
+  background:color-mix(in srgb,var(--hc) calc(var(--a) * 100%),var(--surface));color:var(--ink)}
+.heat td.pos{--hc:var(--pos)}
+.heat td.neg{--hc:var(--warn)}
+.heat td.strong{color:var(--on-strong)}
+.heatkey{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--ink2);margin-top:10px}
+.heatkey .ramp{width:140px;height:8px;border-radius:2px;background:linear-gradient(90deg,var(--warn),var(--surface),var(--pos));border:1px solid var(--line)}
+.notes{font-size:12.5px;color:var(--ink2);display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:10px 24px}
+.notes p{margin:0}
+.notes b{color:var(--ink)}
+@media (max-width:900px){.app{grid-template-columns:minmax(0,1fr)}}
+@media (max-width:520px){.stats{grid-template-columns:minmax(0,1fr);gap:8px}.stat .v{font-size:24px}.row{grid-template-columns:1fr 1fr}}
+@media (prefers-reduced-motion:no-preference){.bar{transition:left .2s,width .2s}}
+</style>
+
+<div class="wrap">
+  <header class="top">
+    <div>
+      <h1>Mean-Variance Optimizer</h1>
+      <p class="sub">Load price history from FYERS, estimate returns and covariance, then find the portfolio that fits your objective and limits.</p>
+    </div>
+    <div id="srcBadge" class="badge"></div>
+  </header>
+
+  <div class="app">
+    <aside class="rail" aria-label="Inputs">
+      <section>
+        <h2>Assets and data</h2>
+        <div class="f">
+          <label for="tickers">FYERS symbols</label>
+          <textarea id="tickers" rows="2" spellcheck="false">RELIANCE, TCS, HDFCBANK, INFY, ITC, SBIN</textarea>
+          <p class="hint">A plain name such as RELIANCE means NSE:RELIANCE-EQ. For anything else use the full form, e.g. NSE:NIFTYBEES-EQ or NSE:NIFTY50-INDEX.</p>
+        </div>
+        <div class="row">
+          <div class="f"><label for="years">History</label>
+            <select id="years"><option value="1">1 year</option><option value="3">3 years</option><option value="5" selected>5 years</option><option value="10">10 years</option></select></div>
+          <div class="f"><label for="freq">Frequency</label>
+            <select id="freq"><option value="daily">Daily</option><option value="weekly">Weekly</option><option value="monthly" selected>Monthly</option></select></div>
+        </div>
+        <div class="f">
+          <span class="lbl">Step 1. Run this on your computer</span>
+          <pre id="cmd" class="cmd"></pre>
+          <button id="copyCmd" class="btn ghost small" type="button">Copy command</button>
+        </div>
+        <details id="setup">
+          <summary>First time? Set up FYERS access</summary>
+          <ol class="steps">
+            <li>Create an app at myapi.fyers.in and note its app ID, secret and redirect URL.</li>
+            <li>Install the SDK: <code>pip install fyers-apiv3</code></li>
+            <li>Set <code>FYERS_CLIENT_ID</code>, <code>FYERS_SECRET_KEY</code> and <code>FYERS_REDIRECT_URI</code> in your terminal.</li>
+            <li>Once each trading day run <code>python3 fetch_fyers.py --login</code>, sign in, and paste back the address you land on.</li>
+          </ol>
+          <p class="hint">fetch_fyers.py asks FYERS for daily candles in windows of 365 days and builds weekly or monthly prices from the last close of each period.</p>
+        </details>
+        <div class="f"><label for="csvFile">Step 2. Load the prices.csv it writes</label><input id="csvFile" type="file" accept=".csv,.txt,text/csv,text/plain"></div>
+        <details id="csvBox">
+          <summary>Or paste CSV rows</summary>
+          <div class="f"><label for="csvMode">The CSV contains</label>
+            <select id="csvMode"><option value="prices">Prices (first column is the date)</option><option value="ret">Returns as decimals (0.012)</option><option value="pct">Returns in percent (1.2)</option></select></div>
+          <div class="f"><label for="csvText">Rows with a header line</label>
+            <textarea id="csvText" rows="5" spellcheck="false" placeholder="Date,NSE:RELIANCE-EQ,NSE:TCS-EQ&#10;2024-01,2650.1,3820.4&#10;2024-02,2891.3,4012.8"></textarea></div>
+          <button id="csvLoad" class="btn ghost small" type="button">Use this data</button>
+          <p class="hint">Daily, weekly or monthly is detected from the dates. Oldest row first or last both work.</p>
+        </details>
+        <button id="exampleBtn" class="linkbtn" type="button">Load the synthetic example data</button>
+      </section>
+
+      <section>
+        <h2>Estimates</h2>
+        <div class="f"><label for="muMethod">Expected returns</label>
+          <select id="muMethod" class="ctl"><option value="hist">Historical average</option><option value="manual">Enter my own</option></select></div>
+        <div class="f"><label for="covMethod">Covariance</label>
+          <select id="covMethod" class="ctl"><option value="sample">Sample covariance</option><option value="lw">Ledoit-Wolf shrinkage</option></select></div>
+        <div class="f"><label for="rf">Risk-free rate (% per year)</label>
+          <input id="rf" class="ctl" type="number" step="0.1" value="4"></div>
+      </section>
+
+      <section>
+        <h2>Optimization</h2>
+        <div class="f"><label for="objective">Objective</label>
+          <select id="objective" class="ctl">
+            <option value="sharpe" selected>Maximum Sharpe ratio</option>
+            <option value="minvar">Minimum variance</option>
+            <option value="target_ret">Minimum risk for a target return</option>
+            <option value="target_vol">Maximum return for a target volatility</option>
+            <option value="utility">Mean-variance utility (risk aversion)</option>
+          </select></div>
+        <div class="f" id="wrapRet" hidden><label for="tRet">Target return (% per year)</label><input id="tRet" class="ctl" type="number" step="0.5" value="10"></div>
+        <div class="f" id="wrapVol" hidden><label for="tVol">Target volatility (% per year)</label><input id="tVol" class="ctl" type="number" step="0.5" value="12"></div>
+        <div class="f" id="wrapLam" hidden><label for="lambda">Risk aversion (lambda)</label><input id="lambda" class="ctl" type="number" step="0.5" min="0.1" value="3"></div>
+        <div class="row">
+          <div class="f"><label for="lb">Min weight (%)</label><input id="lb" class="ctl" type="number" step="5" value="0"></div>
+          <div class="f"><label for="ub">Max weight (%)</label><input id="ub" class="ctl" type="number" step="5" value="100"></div>
+        </div>
+        <label class="check"><input id="shorts" class="ctl" type="checkbox"> Allow short selling</label>
+        <div class="f"><label for="nPts">Frontier points</label>
+          <select id="nPts" class="ctl"><option value="30">30</option><option value="50" selected>50</option><option value="80">80</option></select></div>
+      </section>
+    </aside>
+
+    <main class="results">
+      <div id="msgs" class="msgs" aria-live="polite"></div>
+      <div id="stats" class="stats"></div>
+
+      <section class="card">
+        <header>
+          <h3>Efficient frontier</h3>
+          <div class="legend">
+            <span><i class="sw" style="background:var(--accent);height:3px"></i>Frontier</span>
+            <span><i class="sw" style="background:var(--muted);height:0;border-top:2px dashed var(--muted)"></i>Capital allocation line</span>
+            <span><i class="sw" style="background:var(--ink2);border-radius:50%;width:9px;height:9px"></i>Assets</span>
+            <span><i class="sw" style="background:var(--ink);width:9px;height:9px"></i>Min variance</span>
+            <span><i class="sw" style="background:var(--ink);width:9px;height:9px;transform:rotate(45deg)"></i>Max Sharpe</span>
+            <span><i class="sw" style="background:var(--accent);border-radius:50%"></i>Selected</span>
+          </div>
+        </header>
+        <div class="chartbox" id="chartBox"></div>
+      </section>
+
+      <section class="card">
+        <header>
+          <h3>Allocation</h3>
+          <button id="copyBtn" class="btn ghost small" type="button">Copy weights as CSV</button>
+        </header>
+        <div class="scroll"><table class="alloc" id="alloc"></table></div>
+        <p class="hint" id="allocHint" style="margin-top:10px"></p>
+      </section>
+
+      <section class="card">
+        <header><h3>Correlation</h3><span class="hint" id="corrNote"></span></header>
+        <div class="scroll" id="heat"></div>
+        <div class="heatkey"><span>-1</span><span class="ramp"></span><span>+1</span></div>
+      </section>
+
+      <section class="card">
+        <header><h3>How the numbers are built</h3></header>
+        <div class="notes">
+          <p><b>Returns.</b> Simple period returns from adjusted close, so dividends and splits are included. The mean is multiplied by the periods per year (252, 52 or 12).</p>
+          <p><b>Covariance.</b> Sample covariance of the same returns, scaled the same way. Ledoit-Wolf pulls it toward a scaled identity matrix, which steadies the weights when history is short.</p>
+          <p><b>Optimizer.</b> Quadratic program with a full-investment constraint and per-asset weight bounds. Maximum Sharpe is found by searching along the frontier.</p>
+          <p><b>Caution.</b> Weights are very sensitive to expected-return estimates. Treat output as an input to judgment, not advice.</p>
+        </div>
+      </section>
+    </main>
+  </div>
+</div>
+
+<script>
+(function(){
+"use strict";
+
+//#core-start
+const PPY={daily:252,weekly:52,monthly:12};
+function dot(a,b){let s=0;for(let i=0;i<a.length;i++)s+=a[i]*b[i];return s}
+function sum(a){let s=0;for(const v of a)s+=v;return s}
+function zeros(n){return new Array(n).fill(0)}
+function matVec(M,v){return M.map(r=>dot(r,v))}
+function portStat(w,mu,S){const v=dot(w,matVec(S,w));return{ret:dot(w,mu),vol:Math.sqrt(Math.max(v,0))}}
+
+/* ---------- estimation ---------- */
+function estimate(R,ppy,shrink){
+  const T=R.length,n=R[0].length;
+  const m=zeros(n);
+  for(const r of R)for(let i=0;i<n;i++)m[i]+=r[i];
+  for(let i=0;i<n;i++)m[i]/=T;
+  const X=R.map(r=>r.map((v,i)=>v-m[i]));
+  const S0=Array.from({length:n},()=>zeros(n));
+  for(const x of X)for(let i=0;i<n;i++)for(let j=i;j<n;j++)S0[i][j]+=x[i]*x[j];
+  for(let i=0;i<n;i++)for(let j=i;j<n;j++){S0[i][j]/=T;S0[j][i]=S0[i][j]}
+  let S=S0,delta=0;
+  if(shrink){
+    let tr=0;for(let i=0;i<n;i++)tr+=S0[i][i];
+    const mb=tr/n;
+    let d2=0;
+    for(let i=0;i<n;i++)for(let j=0;j<n;j++){const e=S0[i][j]-(i===j?mb:0);d2+=e*e}
+    d2/=n;
+    let b2=0;
+    for(const x of X)for(let i=0;i<n;i++)for(let j=0;j<n;j++){const e=x[i]*x[j]-S0[i][j];b2+=e*e}
+    b2/=(n*T*T);
+    b2=Math.min(b2,d2);
+    delta=d2>0?b2/d2:0;
+    S=S0.map((r,i)=>r.map((v,j)=>delta*(i===j?mb:0)+(1-delta)*v));
+  }
+  const sc=(T/Math.max(T-1,1))*ppy;
+  S=S.map(r=>r.map(v=>v*sc));
+  let tr2=0;for(let i=0;i<n;i++)tr2+=S[i][i];
+  for(let i=0;i<n;i++)S[i][i]+=1e-10*tr2/n;
+  const sd=S.map((r,i)=>Math.sqrt(S[i][i]));
+  const corr=S.map((r,i)=>r.map((v,j)=>v/(sd[i]*sd[j])));
+  return{mu:m.map(v=>v*ppy),S,sd,corr,delta,T};
+}
+
+/* ---------- linear algebra ---------- */
+function luFactor(M){
+  const n=M.length,A=M.map(r=>r.slice()),piv=[...Array(n).keys()];
+  for(let k=0;k<n;k++){
+    let p=k,mx=Math.abs(A[k][k]);
+    for(let i=k+1;i<n;i++){const a=Math.abs(A[i][k]);if(a>mx){mx=a;p=i}}
+    if(mx<1e-14)throw new Error("singular matrix");
+    if(p!==k){[A[k],A[p]]=[A[p],A[k]];[piv[k],piv[p]]=[piv[p],piv[k]]}
+    for(let i=k+1;i<n;i++){
+      A[i][k]/=A[k][k];const f=A[i][k];
+      if(f!==0)for(let j=k+1;j<n;j++)A[i][j]-=f*A[k][j];
+    }
+  }
+  return{A,piv};
+}
+function luSolve(F,b){
+  const{A,piv}=F,n=A.length,x=piv.map(i=>b[i]);
+  for(let i=0;i<n;i++)for(let j=0;j<i;j++)x[i]-=A[i][j]*x[j];
+  for(let i=n-1;i>=0;i--){for(let j=i+1;j<n;j++)x[i]-=A[i][j]*x[j];x[i]/=A[i][i]}
+  return x;
+}
+
+/* ---------- QP: min 0.5 x'Px + q'x  s.t. Cx = d, lb <= x <= ub ---------- */
+function admmQP(P,q,A,l,u,warm){
+  const n=q.length,m=A.length,sigma=1e-6,alpha=1.6,rho0=0.1;
+  const rho=A.map((_,i)=>l[i]===u[i]?rho0*1e3:rho0);
+  const K=P.map((r,i)=>r.map((v,j)=>v+(i===j?sigma:0)));
+  for(let r=0;r<m;r++)for(let i=0;i<n;i++){const ai=A[r][i];if(ai===0)continue;for(let j=0;j<n;j++)K[i][j]+=rho[r]*ai*A[r][j]}
+  const F=luFactor(K);
+  if(warm&&(warm.x.length!==n||warm.z.length!==m||warm.y.length!==m))warm=null;
+  let x=warm?warm.x.slice():zeros(n),z=warm?warm.z.slice():zeros(m),y=warm?warm.y.slice():zeros(m);
+  const rhs=zeros(n);
+  for(let k=1;k<=20000;k++){
+    for(let j=0;j<n;j++)rhs[j]=sigma*x[j]-q[j];
+    for(let i=0;i<m;i++){const t=rho[i]*z[i]-y[i];if(t===0)continue;const Ai=A[i];for(let j=0;j<n;j++)rhs[j]+=Ai[j]*t}
+    const xt=luSolve(F,rhs);
+    for(let i=0;i<m;i++){
+      const zt=dot(A[i],xt);
+      const zr=alpha*zt+(1-alpha)*z[i];
+      const zn=Math.min(u[i],Math.max(l[i],zr+y[i]/rho[i]));
+      y[i]+=rho[i]*(zr-zn);
+      z[i]=zn;
+    }
+    for(let j=0;j<n;j++)x[j]=alpha*xt[j]+(1-alpha)*x[j];
+    if(k%20===0){
+      let pr=0;for(let i=0;i<m;i++)pr=Math.max(pr,Math.abs(dot(A[i],x)-z[i]));
+      const Px=matVec(P,x);let dr=0,sc=1;
+      for(let j=0;j<n;j++){
+        let g=Px[j]+q[j];for(let i=0;i<m;i++)g+=A[i][j]*y[i];
+        dr=Math.max(dr,Math.abs(g));sc=Math.max(sc,Math.abs(Px[j]),Math.abs(q[j]));
+      }
+      if(pr<1e-10&&dr<1e-9*sc)break;
+    }
+  }
+  return{x,z,y};
+}
+function polish(P,q,C,d,lb,ub,x){
+  const n=x.length,tol=1e-7,fixedVal=new Array(n).fill(null),free=[];
+  for(let i=0;i<n;i++){
+    if(x[i]<=lb[i]+tol)fixedVal[i]=lb[i];
+    else if(x[i]>=ub[i]-tol)fixedVal[i]=ub[i];
+    else free.push(i);
+  }
+  const nf=free.length,mc=C.length;
+  if(nf<mc||nf===0)return null;
+  const N=nf+mc,M=Array.from({length:N},()=>zeros(N)),b=zeros(N);
+  free.forEach((i,a)=>{
+    free.forEach((j,c)=>{M[a][c]=P[i][j]});
+    for(let r=0;r<mc;r++){M[a][nf+r]=C[r][i];M[nf+r][a]=C[r][i]}
+    let s=-q[i];
+    for(let j=0;j<n;j++)if(fixedVal[j]!==null)s-=P[i][j]*fixedVal[j];
+    b[a]=s;
+  });
+  for(let r=0;r<mc;r++){
+    let s=d[r];
+    for(let j=0;j<n;j++)if(fixedVal[j]!==null)s-=C[r][j]*fixedVal[j];
+    b[nf+r]=s;
+  }
+  let sol;
+  try{sol=luSolve(luFactor(M),b)}catch(e){return null}
+  const w=new Array(n);
+  for(let i=0;i<n;i++)w[i]=fixedVal[i]!==null?fixedVal[i]:0;
+  free.forEach((i,a)=>{w[i]=sol[a]});
+  for(let i=0;i<n;i++)if(w[i]<lb[i]-1e-9||w[i]>ub[i]+1e-9)return null;
+  return w;
+}
+function solveQP(P,q,C,d,lb,ub,warm){
+  const n=q.length;
+  const A=C.map(r=>r.slice());
+  for(let i=0;i<n;i++){const r=zeros(n);r[i]=1;A.push(r)}
+  const l=d.concat(lb),u=d.concat(ub);
+  let res=admmQP(P,q,A,l,u,warm);
+  if(warm&&res.x.some(v=>!isFinite(v)))res=admmQP(P,q,A,l,u,null);
+  let w=res.x.map((v,i)=>Math.min(ub[i],Math.max(lb[i],v)));
+  const pw=polish(P,q,C,d,lb,ub,w);
+  if(pw)w=pw;
+  return{w,warm:res};
+}
+
+/* ---------- portfolio problems ---------- */
+function retExtreme(mu,lb,ub,dir){
+  const n=mu.length,w=lb.slice();
+  let rem=1-sum(lb);
+  const idx=[...Array(n).keys()].sort((a,b)=>dir*(mu[b]-mu[a]));
+  for(const i of idx){const add=Math.min(ub[i]-lb[i],Math.max(rem,0));w[i]+=add;rem-=add}
+  return{w,ret:dot(w,mu)};
+}
+function checkFeasible(lb,ub){
+  for(let i=0;i<lb.length;i++)if(lb[i]>ub[i])throw new Error("Min weight is above max weight.");
+  if(sum(lb)>1+1e-9)throw new Error("The minimum weights add up to more than 100%. Lower the min weight.");
+  if(sum(ub)<1-1e-9)throw new Error("The maximum weights add up to less than 100%, so the portfolio cannot be fully invested. Raise the max weight or add assets.");
+}
+function buildFrontier(mu,S,lb,ub,N,rf){
+  const n=mu.length,ones=new Array(n).fill(1);
+  const mv=solveQP(S,zeros(n),[ones],[1],lb,ub);
+  const mvS=portStat(mv.w,mu,S);
+  const hi=retExtreme(mu,lb,ub,1);
+  const tmin=mvS.ret,tmax=Math.max(hi.ret,tmin);
+  const solveT=(t,warm)=>solveQP(S,zeros(n),[ones,mu],[1,t],lb,ub,warm);
+  const pts=[{w:mv.w,...mvS}];
+  let warm=mv.warm;
+  const ts=[tmin];
+  if(tmax-tmin>1e-9&&N>1){
+    for(let k=1;k<N;k++){
+      const t=tmin+(tmax-tmin)*k/(N-1);
+      let w;
+      try{const r=solveT(t,warm);w=r.w;warm=r.warm}catch(e){w=null}
+      if(!w||Math.abs(dot(w,mu)-t)>1e-6){ if(k===N-1)w=hi.w; else continue }
+      pts.push({w,...portStat(w,mu,S)});ts.push(t);
+    }
+  }
+  const sh=p=>p.vol>0?(p.ret-rf)/p.vol:-Infinity;
+  let kb=0;pts.forEach((p,k)=>{if(sh(p)>sh(pts[kb]))kb=k});
+  let best=pts[kb];
+  if(pts.length>2){
+    let a=ts[Math.max(kb-1,0)],b=ts[Math.min(kb+1,pts.length-1)];
+    const f=t=>{const r=solveT(t);const p={w:r.w,...portStat(r.w,mu,S)};return{p,s:sh(p)}};
+    const g=(Math.sqrt(5)-1)/2;
+    let c=b-g*(b-a),dd=a+g*(b-a),fc=f(c),fd=f(dd);
+    for(let it=0;it<28;it++){
+      if(fc.s<fd.s){a=c;c=dd;fc=fd;dd=a+g*(b-a);fd=f(dd)}
+      else{b=dd;dd=c;fd=fc;c=b-g*(b-a);fc=f(c)}
+    }
+    const cand=fc.s>fd.s?fc:fd;
+    if(cand.s>sh(best))best=cand.p;
+  }
+  return{pts,minvar:pts[0],sharpe:best,sharpeValue:sh(best),tmin,tmax,solveT,hi};
+}
+function pickTargetVol(fr,mu,sigma){
+  const lo0=fr.minvar.vol;
+  if(sigma<lo0-1e-9)return{error:"Target volatility is below the minimum achievable ("+(lo0*100).toFixed(2)+"%)."};
+  const top=fr.pts[fr.pts.length-1];
+  if(sigma>=top.vol)return{p:top,note:"Target volatility is above the highest-risk frontier portfolio, so the maximum-return portfolio is shown."};
+  let a=fr.tmin,b=fr.tmax,best=fr.minvar;
+  for(let it=0;it<50;it++){
+    const t=(a+b)/2,r=fr.solveT(t),p={w:r.w,...portStat(r.w,mu,fr.S||[[0]])};
+    best=p;
+    if(p.vol<sigma)a=t;else b=t;
+  }
+  return{p:best};
+}
+
+/* ---------- frequency detection from dates ---------- */
+function inferFreq(dates){
+  const t=dates.map(d=>Date.parse(d)).filter(v=>isFinite(v));
+  if(t.length<4)return null;
+  const gaps=[];for(let i=1;i<t.length;i++)gaps.push(Math.abs(t[i]-t[i-1])/864e5);
+  gaps.sort((x,y)=>x-y);
+  const med=gaps[Math.floor(gaps.length/2)];
+  if(med<=5)return"daily";
+  if(med<=10)return"weekly";
+  if(med>=20)return"monthly";
+  return null;
+}
+
+/* ---------- CSV ---------- */
+function parseCSV(text,mode){
+  const lines=text.split(/\r?\n/).filter(l=>l.trim().length);
+  if(lines.length<4)throw new Error("Need a header line and at least 3 data rows.");
+  const first=lines[0];
+  const delim=[",","\t",";"].map(d=>[d,first.split(d).length]).sort((a,b)=>b[1]-a[1])[0][0];
+  const rows=lines.map(l=>l.split(delim).map(s=>s.trim().replace(/^"|"$/g,"")));
+  const header=rows[0];
+  if(header.length<3)throw new Error("Need a date column plus at least two asset columns.");
+  const assets=header.slice(1);
+  let data=[],bad=0;
+  for(const r of rows.slice(1)){
+    const vals=r.slice(1,header.length).map(v=>parseFloat(String(v).replace(/%/g,"").replace(/,/g,"")));
+    if(vals.length<assets.length||vals.some(v=>!isFinite(v))){bad++;continue}
+    data.push({d:r[0],v:vals});
+  }
+  if(data.length<4)throw new Error("Too few valid numeric rows ("+bad+" skipped).");
+  const t0=Date.parse(data[0].d),t1=Date.parse(data[data.length-1].d);
+  if(isFinite(t0)&&isFinite(t1)&&t0>t1)data.reverse();
+  let R;
+  if(mode==="prices"){
+    if(data.some(x=>x.v.some(v=>v<=0)))throw new Error("Prices must be positive. If these are returns, change the CSV type.");
+    R=[];for(let t=1;t<data.length;t++)R.push(data[t].v.map((v,i)=>v/data[t-1].v[i]-1));
+    data=data.slice(1);
+  }else{
+    R=data.map(x=>x.v.map(v=>mode==="pct"?v/100:v));
+  }
+  return{assets,dates:data.map(x=>x.d),R,skipped:bad};
+}
+//#core-end
+
+/* ================= UI ================= */
+const $=id=>document.getElementById(id);
+const esc=s=>String(s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const pct=(x,d=1)=>(x*100).toFixed(d)+"%";
+const S={assets:[],R:null,dates:[],freq:"monthly",source:"example",label:"",manualMu:{},current:{},last:null};
+
+/* synthetic example data */
+function exampleData(){
+  const names=["US Equity","Intl Equity","Gov Bonds","Corp Bonds","Gold","Real Estate"];
+  const mu=[.09,.07,.03,.045,.05,.075],sd=[.15,.17,.06,.07,.15,.19];
+  const C=[[1,.8,-.1,.25,.05,.7],[.8,1,-.05,.25,.1,.65],[-.1,-.05,1,.7,.15,.05],[.25,.25,.7,1,.15,.3],[.05,.1,.15,.15,1,.1],[.7,.65,.05,.3,.1,1]];
+  const n=names.length,L=Array.from({length:n},()=>zeros(n));
+  for(let i=0;i<n;i++)for(let j=0;j<=i;j++){
+    let s=C[i][j];for(let k=0;k<j;k++)s-=L[i][k]*L[j][k];
+    L[i][j]=i===j?Math.sqrt(s):s/L[j][j];
+  }
+  let seed=20261017;
+  const rnd=()=>{seed|=0;seed=seed+0x6D2B79F5|0;let t=Math.imul(seed^seed>>>15,1|seed);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296};
+  const gauss=()=>Math.sqrt(-2*Math.log(rnd()+1e-12))*Math.cos(2*Math.PI*rnd());
+  const T=120,R=[],dates=[];
+  for(let t=0;t<T;t++){
+    const z=Array.from({length:n},gauss);
+    R.push(names.map((_,i)=>{let e=0;for(let k=0;k<=i;k++)e+=L[i][k]*z[k];return mu[i]/12+sd[i]/Math.sqrt(12)*e}));
+    const y=2016+Math.floor((9+t)/12),m=(9+t)%12+1;
+    dates.push(y+"-"+String(m).padStart(2,"0"));
+  }
+  return{assets:names,R,dates};
+}
+
+function setData(assets,R,dates,source,label,freq){
+  S.assets=assets;S.R=R;S.dates=dates;S.source=source;S.label=label;S.freq=freq;S.manualMu={};S.current={};
+  schedule(true);
+}
+function loadExample(){
+  const e=exampleData();
+  $("freq").value="monthly";
+  setData(e.assets,e.R,e.dates,"example","Synthetic example data, monthly, "+e.R.length+" returns","monthly");
+}
+
+/* ---------- FYERS download command ---------- */
+function parseTickers(){
+  const seen=new Set(),out=[];
+  for(const t of $("tickers").value.split(/[\s,;]+/)){
+    const s=t.trim();if(s&&!seen.has(s.toUpperCase())){seen.add(s.toUpperCase());out.push(s)}
+  }
+  return out.slice(0,40);
+}
+const shq=s=>/^[A-Za-z0-9:_.\-]+$/.test(s)?s:"'"+s.replace(/'/g,"'\\''")+"'";
+function buildCmd(){
+  const syms=parseTickers();
+  const el=$("cmd");
+  if(syms.length<2){el.textContent="Enter at least two symbols above.";return}
+  el.textContent="python3 fetch_fyers.py "+syms.map(shq).join(" ")+" --years "+$("years").value+" --freq "+$("freq").value+" --out prices.csv";
+}
+
+/* ---------- CSV handlers ---------- */
+function loadCSV(text){
+  try{
+    const p=parseCSV(text,$("csvMode").value);
+    const sel=$("freq").value,det=inferFreq(p.dates),freq=det||sel;
+    $("freq").value=freq;buildCmd();
+    setData(p.assets,p.R,p.dates,"csv","CSV upload, "+freq+", "+p.R.length+" returns, "+p.dates[0]+" to "+p.dates[p.dates.length-1],freq);
+    if(det&&det!==sel)queueNotice("info","The dates look "+det+", so the frequency was set to "+det+". Change it in the Frequency box if that is wrong.");
+    if(p.skipped)queueNotice("warn",p.skipped+" row(s) were skipped because they were not fully numeric.");
+  }catch(e){addNotice("err",e.message)}
+}
+
+/* ---------- compute ---------- */
+const notices=[],pending=[];
+function addNotice(kind,text){notices.push({kind,text,sticky:true});renderMsgs()}
+function queueNotice(kind,text){pending.push({kind,text})}
+function renderMsgs(){
+  $("msgs").innerHTML=notices.map(n=>'<div class="msg '+(n.kind==="err"?"err":n.kind==="info"?"info":"")+'">'+esc(n.text)+"</div>").join("");
+}
+let timer=null,resetNotices=false;
+function schedule(clear){
+  if(clear)resetNotices=true;
+  clearTimeout(timer);timer=setTimeout(compute,120);
+}
+function readBounds(n){
+  const shorts=$("shorts").checked;
+  let lb=parseFloat($("lb").value),ub=parseFloat($("ub").value);
+  if(!isFinite(lb))lb=0;if(!isFinite(ub))ub=100;
+  if(!shorts)lb=Math.max(lb,0);
+  return{lb:new Array(n).fill(lb/100),ub:new Array(n).fill(ub/100)};
+}
+const OBJ_NAME={sharpe:"Maximum Sharpe ratio",minvar:"Minimum variance",target_ret:"Minimum risk for target return",target_vol:"Maximum return for target volatility",utility:"Mean-variance utility"};
+
+function compute(){
+  const keep=resetNotices?[]:notices.filter(n=>n.sticky);
+  resetNotices=false;
+  const local=pending.splice(0);
+  const n=S.assets.length;
+  $("srcBadge").innerHTML=S.source==="example"?"<b>Example</b> synthetic data, not real prices":esc(S.label);
+  if(!S.R||n<2){return}
+  const ppy=PPY[S.freq],rf=(parseFloat($("rf").value)||0)/100;
+  const obj=$("objective").value;
+  $("wrapRet").hidden=obj!=="target_ret";$("wrapVol").hidden=obj!=="target_vol";$("wrapLam").hidden=obj!=="utility";
+  let out;
+  try{
+    const est=estimate(S.R,ppy,$("covMethod").value==="lw");
+    if(S.R.length<24)local.push({kind:"warn",text:"Only "+S.R.length+" return observations. Estimates this short are noisy, so consider a longer history or Ledoit-Wolf shrinkage."});
+    if(S.R.length<=n)local.push({kind:"warn",text:"There are no more observations than assets, so the sample covariance is singular. Use Ledoit-Wolf shrinkage or add history."});
+    let mu=est.mu;
+    if($("muMethod").value==="manual")mu=mu.map((v,i)=>S.manualMu[S.assets[i]]!==undefined?S.manualMu[S.assets[i]]:v);
+    const{lb,ub}=readBounds(n);
+    checkFeasible(lb,ub);
+    const fr=buildFrontier(mu,est.S,lb,ub,+$("nPts").value,rf);
+    fr.S=est.S;
+    let sel,ones=new Array(n).fill(1);
+    if(obj==="sharpe"){sel=fr.sharpe;if(fr.sharpeValue<=0)local.push({kind:"warn",text:"No allowed portfolio earns more than the risk-free rate, so the best Sharpe ratio is zero or negative."})}
+    else if(obj==="minvar")sel=fr.minvar;
+    else if(obj==="target_ret"){
+      const t=(parseFloat($("tRet").value)||0)/100;
+      if(t<fr.tmin-1e-9){local.push({kind:"warn",text:"Target return is below the minimum-variance portfolio's return ("+pct(fr.tmin,2)+"). Showing the minimum-variance portfolio."});sel=fr.minvar}
+      else if(t>fr.tmax+1e-9){local.push({kind:"warn",text:"Target return is above the highest return the limits allow ("+pct(fr.tmax,2)+"). Showing that portfolio."});sel=fr.pts[fr.pts.length-1]}
+      else{const r=fr.solveT(t);sel={w:r.w,...portStat(r.w,mu,est.S)}}
+    }else if(obj==="target_vol"){
+      const r=pickTargetVol(fr,mu,(parseFloat($("tVol").value)||0)/100);
+      if(r.error)throw new Error(r.error);
+      sel=r.p;if(r.note)local.push({kind:"warn",text:r.note});
+    }else{
+      const lam=Math.max(parseFloat($("lambda").value)||3,1e-6);
+      const r=solveQP(est.S.map(row=>row.map(v=>v*lam)),mu.map(v=>-v),[ones],[1],lb,ub);
+      sel={w:r.w,...portStat(r.w,mu,est.S)};
+    }
+    sel.w=sel.w.map(v=>Math.abs(v)<5e-5?0:v);
+    out={est,mu,fr,sel,rf,obj,lb:lb[0],ub:ub[0]};
+  }catch(e){
+    local.push({kind:"err",text:e.message});out=null;
+  }
+  notices.length=0;
+  keep.forEach(k=>notices.push(k));
+  local.forEach(l=>notices.push(l));
+  renderMsgs();
+  S.last=out;
+  if(out)render(out);
+  else{$("stats").innerHTML="";}
+}
+
+/* ---------- rendering ---------- */
+function niceTicks(lo,hi,count){
+  const span=hi-lo||1,raw=span/count,mag=Math.pow(10,Math.floor(Math.log10(raw)));
+  const step=[1,2,2.5,5,10].map(m=>m*mag).find(s=>s>=raw)||10*mag;
+  const t=[];for(let v=Math.ceil(lo/step-1e-9)*step;v<=hi+1e-9;v+=step)t.push(+v.toFixed(10));
+  return t;
+}
+function render(o){
+  const{est,mu,fr,sel,rf}=o;
+  const shp=sel.vol>0?(sel.ret-rf)/sel.vol:0;
+  $("stats").innerHTML=
+    '<div class="stat"><span class="k">Expected return</span><span class="v">'+pct(sel.ret,2)+'</span><span class="s">'+esc(OBJ_NAME[o.obj])+'</span></div>'+
+    '<div class="stat"><span class="k">Volatility</span><span class="v">'+pct(sel.vol,2)+'</span><span class="s">annualized</span></div>'+
+    '<div class="stat"><span class="k">Sharpe ratio</span><span class="v">'+shp.toFixed(2)+'</span><span class="s">risk-free '+pct(rf,2)+'</span></div>';
+  renderChart(o);renderAlloc(o);renderHeat(o);
+}
+
+function renderChart(o){
+  const{est,mu,fr,sel,rf}=o,n=S.assets.length;
+  const W=720,H=420,m={l:54,r:18,t:14,b:46};
+  const assetPts=S.assets.map((a,i)=>({label:a,vol:est.sd[i],ret:mu[i],type:"asset",i}));
+  const all=[...assetPts,...fr.pts,{vol:0,ret:rf}];
+  let xmax=Math.max(...all.map(p=>p.vol))*1.08,ymin=Math.min(...all.map(p=>p.ret)),ymax=Math.max(...all.map(p=>p.ret));
+  const pad=(ymax-ymin||0.02)*0.08;ymin-=pad;ymax+=pad;
+  const x=v=>m.l+v/xmax*(W-m.l-m.r),y=v=>H-m.b-(v-ymin)/(ymax-ymin)*(H-m.t-m.b);
+  let g="";
+  for(const t of niceTicks(ymin,ymax,6)){
+    g+='<line x1="'+m.l+'" x2="'+(W-m.r)+'" y1="'+y(t)+'" y2="'+y(t)+'" stroke="var(--line)" stroke-width="1"/>';
+    g+='<text class="axt" x="'+(m.l-8)+'" y="'+(y(t)+4)+'" text-anchor="end">'+(t*100).toFixed(0)+'%</text>';
+  }
+  for(const t of niceTicks(0,xmax,6)){
+    g+='<text class="axt" x="'+x(t)+'" y="'+(H-m.b+16)+'" text-anchor="middle">'+(t*100).toFixed(0)+'%</text>';
+  }
+  g+='<line x1="'+m.l+'" x2="'+(W-m.r)+'" y1="'+(H-m.b)+'" y2="'+(H-m.b)+'" stroke="var(--muted)"/>';
+  g+='<text class="axt" x="'+((m.l+W-m.r)/2)+'" y="'+(H-8)+'" text-anchor="middle">Volatility (annualized)</text>';
+  g+='<text class="axt" transform="translate(13 '+((m.t+H-m.b)/2)+') rotate(-90)" text-anchor="middle">Expected return (annualized)</text>';
+  if(fr.sharpeValue>0){
+    const s=fr.sharpe,slope=(s.ret-rf)/s.vol,x2=xmax,y2=rf+slope*x2;
+    g+='<line x1="'+x(0)+'" y1="'+y(rf)+'" x2="'+x(x2)+'" y2="'+y(y2)+'" stroke="var(--muted)" stroke-width="1.5" stroke-dasharray="5 4"/>';
+  }
+  g+='<polyline fill="none" stroke="var(--accent)" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round" points="'+fr.pts.map(p=>x(p.vol).toFixed(1)+","+y(p.ret).toFixed(1)).join(" ")+'"/>';
+  const placed=[];
+  const labelAt=(px,py,text,anchorPref)=>{
+    const w=text.length*6.4+4,h=13;
+    const cands=[[8,-6,"start"],[-8,-6,"end"],[8,14,"start"],[-8,14,"end"],[0,-12,"middle"],[0,22,"middle"]];
+    for(const[dx,dy,an]of cands){
+      const lx=px+dx,ly=py+dy,x0=an==="start"?lx:an==="end"?lx-w:lx-w/2,y0=ly-10;
+      const r={x0,y0,x1:x0+w,y1:y0+h};
+      const clash=placed.some(q=>!(r.x1<q.x0||r.x0>q.x1||r.y1<q.y0||r.y0>q.y1));
+      if(!clash&&r.x0>=2&&r.x1<=W-2&&r.y0>=2&&r.y1<=H-m.b){placed.push(r);return'<text x="'+lx+'" y="'+ly+'" text-anchor="'+an+'" style="fill:var(--ink)">'+esc(text)+'</text>'}
+    }
+    return"";
+  };
+  const mk=[];
+  const mvx=x(fr.minvar.vol),mvy=y(fr.minvar.ret),shx=x(fr.sharpe.vol),shy=y(fr.sharpe.ret),sx=x(sel.vol),sy=y(sel.ret);
+  placed.push({x0:mvx-6,y0:mvy-6,x1:mvx+6,y1:mvy+6},{x0:shx-7,y0:shy-7,x1:shx+7,y1:shy+7},{x0:sx-9,y0:sy-9,x1:sx+9,y1:sy+9});
+  let labels="";
+  labels+=labelAt(mvx,mvy+4,"Min variance");
+  labels+=labelAt(shx,shy,"Max Sharpe");
+  assetPts.forEach(p=>{labels+=labelAt(x(p.vol),y(p.ret),p.label)});
+  assetPts.forEach(p=>{g+='<circle cx="'+x(p.vol)+'" cy="'+y(p.ret)+'" r="4.5" style="fill:var(--ink2);stroke:var(--surface);stroke-width:2"/>'});
+  g+='<rect x="'+(mvx-4.5)+'" y="'+(mvy-4.5)+'" width="9" height="9" style="fill:var(--ink);stroke:var(--surface);stroke-width:2"/>';
+  g+='<rect x="'+(shx-4.5)+'" y="'+(shy-4.5)+'" width="9" height="9" transform="rotate(45 '+shx+' '+shy+')" style="fill:var(--ink);stroke:var(--surface);stroke-width:2"/>';
+  g+='<circle cx="'+sx+'" cy="'+sy+'" r="7" style="fill:var(--accent);stroke:var(--surface);stroke-width:2.5"/>';
+  g+=labels;
+  g+='<g id="hov" style="display:none"><line id="hovLine" y1="'+m.t+'" y2="'+(H-m.b)+'" stroke="var(--muted)" stroke-dasharray="3 3"/><circle id="hovDot" r="5" style="fill:var(--surface);stroke:var(--accent);stroke-width:2.5"/></g>';
+  $("chartBox").innerHTML='<svg class="chart" id="chartSvg" viewBox="0 0 '+W+' '+H+'" role="img" aria-label="Efficient frontier of return against volatility with assets and optimal portfolios marked">'+g+'</svg><div class="tip" id="tip" hidden></div>';
+  const svg=$("chartSvg"),tip=$("tip"),hov=$("hov");
+  const targets=[
+    ...assetPts.map(p=>({px:x(p.vol),py:y(p.ret),html:'<b>'+esc(p.label)+'</b><br><span class="mono">return '+pct(p.ret,1)+'<br>vol '+pct(p.vol,1)+'<br>Sharpe '+((p.ret-rf)/p.vol).toFixed(2)+'</span>'})),
+    {px:mvx,py:mvy,html:'<b>Minimum variance</b>'+wtLine(fr.minvar,rf)},
+    {px:shx,py:shy,html:'<b>Maximum Sharpe</b>'+wtLine(fr.sharpe,rf)},
+    {px:sx,py:sy,html:'<b>Selected portfolio</b>'+wtLine(sel,rf)}
+  ];
+  const fpts=fr.pts.map(p=>({px:x(p.vol),py:y(p.ret),html:'<b>Frontier</b>'+wtLine(p,rf),line:true}));
+  svg.addEventListener("pointermove",ev=>{
+    const r=svg.getBoundingClientRect(),k=W/r.width,mx=(ev.clientX-r.left)*k,my=(ev.clientY-r.top)*k;
+    let best=null,bd=1e9;
+    for(const t of targets){const d=Math.hypot(t.px-mx,t.py-my);if(d<bd){bd=d;best=t}}
+    if(bd>14){best=null;bd=1e9;for(const t of fpts){const d=Math.hypot(t.px-mx,t.py-my);if(d<bd){bd=d;best=t}}if(bd>22)best=null}
+    if(!best){tip.hidden=true;hov.style.display="none";return}
+    tip.innerHTML=best.html;tip.hidden=false;
+    const bx=r.width,left=best.px/k+12,top=best.py/k-10;
+    tip.style.left=Math.min(left,bx-tip.offsetWidth-4)+"px";tip.style.top=Math.max(top-tip.offsetHeight,0)+"px";
+    if(best.line){hov.style.display="";$("hovLine").setAttribute("x1",best.px);$("hovLine").setAttribute("x2",best.px);$("hovDot").setAttribute("cx",best.px);$("hovDot").setAttribute("cy",best.py)}
+    else hov.style.display="none";
+  });
+  svg.addEventListener("pointerleave",()=>{tip.hidden=true;hov.style.display="none"});
+}
+function wtLine(p,rf){
+  const top=p.w.map((v,i)=>[v,i]).sort((a,b)=>Math.abs(b[0])-Math.abs(a[0])).slice(0,3).filter(a=>Math.abs(a[0])>0.005);
+  return'<br><span class="mono">return '+pct(p.ret,1)+'<br>vol '+pct(p.vol,1)+'<br>Sharpe '+(p.vol>0?((p.ret-rf)/p.vol).toFixed(2):"n/a")+'</span><br>'+top.map(a=>esc(S.assets[a[1]])+" "+pct(a[0],0)).join(", ");
+}
+
+function renderAlloc(o){
+  const{est,mu,sel}=o,n=S.assets.length,manual=$("muMethod").value==="manual";
+  const ae=document.activeElement,aid=ae&&ae.id,ss=ae&&ae.selectionStart,se=ae&&ae.selectionEnd;
+  const w=sel.w,lo=Math.min(0,...w),hi=Math.max(0.0001,...w),span=hi-lo;
+  const anyCur=S.assets.some(a=>S.current[a]!==undefined&&S.current[a]!=="");
+  let rows="",curSum=0;
+  for(let i=0;i<n;i++){
+    const a=S.assets[i],cv=S.current[a]!==undefined?S.current[a]:"";
+    const cur=parseFloat(cv),curN=isFinite(cur)?cur/100:0;curSum+=curN;
+    const bl=(Math.min(w[i],0)-lo)/span*100,bw=Math.abs(w[i])/span*100,zl=(0-lo)/span*100;
+    const muCell=manual?'<input id="mu_'+i+'" class="cell" type="text" inputmode="decimal" value="'+(S.manualMu[a]!==undefined?(S.manualMu[a]*100).toFixed(2):(mu[i]*100).toFixed(2))+'"> %':pct(mu[i],2);
+    const delta=anyCur?(w[i]-curN)*100:null;
+    rows+='<tr><th scope="row">'+esc(a)+'</th><td class="num">'+muCell+'</td><td class="num">'+pct(est.sd[i],2)+'</td>'+
+      '<td><input id="cw_'+i+'" class="cell" type="text" inputmode="decimal" placeholder="optional" value="'+esc(cv)+'"> %</td>'+
+      '<td><div class="wcell"><div class="track"><span class="zero" style="left:'+zl+'%"></span><span class="bar'+(w[i]<0?" neg":"")+'" style="left:'+bl+'%;width:'+bw+'%"></span></div><span class="num">'+pct(w[i],1)+'</span></div></td>'+
+      '<td class="num">'+(delta===null?"":(delta>=0?"+":"")+delta.toFixed(1)+" pp")+'</td></tr>';
+  }
+  $("alloc").innerHTML='<thead><tr><th>Asset</th><th>Exp. return</th><th>Volatility</th><th>Current weight</th><th>Optimal weight</th><th>Change</th></tr></thead><tbody>'+rows+'</tbody>'+
+    '<tfoot><tr><th scope="row">Portfolio</th><td class="num">'+pct(sel.ret,2)+'</td><td class="num">'+pct(sel.vol,2)+'</td><td class="num">'+(anyCur?(curSum*100).toFixed(1)+"%":"")+'</td><td class="num" style="text-align:right">'+pct(sum(w),1)+'</td><td></td></tr></tfoot>';
+  $("allocHint").textContent=manual?"Expected returns are editable. Edit a value to see the portfolio move.":"Enter your current weights to see the trades needed to reach the optimal portfolio.";
+  if(aid&&/^(cw|mu)_/.test(aid)){const el=$(aid);if(el){el.focus();try{el.setSelectionRange(ss,se)}catch(e){}}}
+}
+function renderHeat(o){
+  const{est}=o,n=S.assets.length;
+  let h='<table class="heat"><thead><tr><th></th>'+S.assets.map(a=>'<th>'+esc(a)+'</th>').join("")+'</tr></thead><tbody>';
+  for(let i=0;i<n;i++){
+    h+='<tr><th scope="row">'+esc(S.assets[i])+'</th>';
+    for(let j=0;j<n;j++){
+      const c=Math.max(-1,Math.min(1,est.corr[i][j])),a=Math.abs(c);
+      h+='<td class="'+(c>=0?"pos":"neg")+(a>0.7?" strong":"")+'" style="--a:'+a.toFixed(3)+'">'+c.toFixed(2)+'</td>';
+    }
+    h+='</tr>';
+  }
+  $("heat").innerHTML=h+'</tbody></table>';
+  $("corrNote").textContent="Based on "+S.R.length+" "+S.freq+" returns";
+}
+
+/* ---------- wiring ---------- */
+document.querySelectorAll(".ctl").forEach(el=>{
+  el.addEventListener("input",()=>schedule(false));
+  el.addEventListener("change",()=>schedule(false));
+});
+$("shorts").addEventListener("change",()=>{
+  const lb=$("lb");
+  if($("shorts").checked&&parseFloat(lb.value)>=0)lb.value="-30";
+  if(!$("shorts").checked&&parseFloat(lb.value)<0)lb.value="0";
+  schedule(false);
+});
+["tickers","years"].forEach(id=>$(id).addEventListener("input",buildCmd));
+$("freq").addEventListener("change",()=>{
+  buildCmd();
+  if(S.R&&S.source!=="example"){S.freq=$("freq").value;schedule(false)}
+});
+$("copyCmd").addEventListener("click",async()=>{
+  const btn=$("copyCmd"),txt=$("cmd").textContent;
+  try{await navigator.clipboard.writeText(txt);btn.textContent="Copied"}
+  catch(e){const r=document.createRange();r.selectNodeContents($("cmd"));const sel=getSelection();sel.removeAllRanges();sel.addRange(r);btn.textContent="Selected, press copy"}
+  setTimeout(()=>{btn.textContent="Copy command"},1800);
+});
+$("exampleBtn").addEventListener("click",loadExample);
+$("csvLoad").addEventListener("click",()=>loadCSV($("csvText").value));
+$("csvFile").addEventListener("change",e=>{
+  const f=e.target.files&&e.target.files[0];if(!f)return;
+  const rd=new FileReader();
+  rd.onload=()=>{$("csvText").value=String(rd.result);loadCSV(String(rd.result))};
+  rd.readAsText(f);
+});
+$("alloc").addEventListener("input",e=>{
+  const t=e.target;if(!t||!t.id)return;
+  const[kind,idx]=t.id.split("_"),a=S.assets[+idx];
+  if(kind==="cw"){S.current[a]=t.value}
+  else if(kind==="mu"){const v=parseFloat(t.value.replace(",","."));if(isFinite(v))S.manualMu[a]=v/100;else delete S.manualMu[a]}
+  schedule(false);
+});
+$("muMethod").addEventListener("change",()=>{
+  if($("muMethod").value==="manual"&&S.last){S.assets.forEach((a,i)=>{if(S.manualMu[a]===undefined)S.manualMu[a]=S.last.est.mu[i]})}
+});
+$("copyBtn").addEventListener("click",async()=>{
+  if(!S.last)return;
+  const txt="asset,weight_pct\n"+S.assets.map((a,i)=>a+","+(S.last.sel.w[i]*100).toFixed(2)).join("\n");
+  const btn=$("copyBtn");
+  try{await navigator.clipboard.writeText(txt);btn.textContent="Copied"}
+  catch(e){const ta=document.createElement("textarea");ta.value=txt;document.body.appendChild(ta);ta.select();try{document.execCommand("copy");btn.textContent="Copied"}catch(_){btn.textContent="Copy failed"}ta.remove()}
+  setTimeout(()=>{btn.textContent="Copy weights as CSV"},1600);
+});
+
+buildCmd();
+loadExample();
+})();
+</script>
+
+</body></html>
