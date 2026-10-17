@@ -150,6 +150,7 @@ table{border-collapse:collapse;width:100%}
         <p id="fyAuth" class="hint">Checking FYERS connection...</p>
         <button id="loginBtn" class="btn" type="button" hidden>Log in with FYERS</button>
         <button id="fetchBtn" class="btn" type="button" hidden>Fetch from FYERS</button>
+        <button id="refetchBtn" class="linkbtn" type="button" hidden>Re-fetch all listed symbols</button>
         <ul id="fetchStatus" class="status" aria-live="polite"></ul>
         <details id="csvBox">
           <summary>Or load a CSV instead</summary>
@@ -603,6 +604,7 @@ function updateAuthUI(){
   const ses=getSession();
   $("loginBtn").hidden=!fyReady||!!ses;
   $("fetchBtn").hidden=!fyReady||!ses;
+  $("refetchBtn").hidden=!fyReady||!ses;
 }
 async function initFyers(){
   const p=new URLSearchParams(location.search),code=p.get("auth_code");
@@ -656,7 +658,44 @@ async function getDaily(sym,startIso,endIso,token){
   }
   return rows;
 }
-async function onFetch(){
+const CACHE_KEY="mvo_fyers_daily_v1";
+let dailyCache=null;
+function loadCache(){
+  if(dailyCache)return dailyCache;
+  dailyCache={};
+  try{const t=JSON.parse(localStorage.getItem(CACHE_KEY)||"{}");if(t&&typeof t==="object")dailyCache=t}catch(e){}
+  return dailyCache;
+}
+function saveCache(){try{localStorage.setItem(CACHE_KEY,JSON.stringify(dailyCache))}catch(e){}}
+const addDays=(iso,n)=>new Date(new Date(iso+"T00:00:00Z").getTime()+n*864e5).toISOString().slice(0,10);
+function mergeRows(a,b){
+  const m=new Map(a);for(const[d,p]of b)m.set(d,p);
+  return[...m.entries()].sort((x,y)=>x[0]<y[0]?-1:x[0]>y[0]?1:0);
+}
+/* Returns the symbol's daily closes for [start,end], requesting from FYERS only the days not already saved. */
+async function ensureDaily(sym,start,end,token,force){
+  const cache=loadCache();
+  let c=force?null:cache[sym];
+  if(c&&!(Array.isArray(c.rows)&&c.from&&c.through))c=null;
+  let requests=0,fetched=0,mode="saved";
+  if(!c){
+    const r=await getDaily(sym,start,end,token);
+    c={from:start,through:end,rows:mergeRows([],r)};requests++;fetched+=r.length;mode="new";
+  }else{
+    if(start<c.from){
+      const r=await getDaily(sym,start,addDays(c.from,-1),token);
+      c.rows=mergeRows(c.rows,r);c.from=start;requests++;fetched+=r.length;mode="updated";
+    }
+    if(c.through<end){
+      const r=await getDaily(sym,addDays(c.through,1),end,token);
+      c.rows=mergeRows(c.rows,r);c.through=end;requests++;fetched+=r.length;mode="updated";
+    }
+  }
+  cache[sym]=c;
+  if(requests)saveCache();
+  return{rows:c.rows.filter(r=>r[0]>=start&&r[0]<=end),requests,fetched,mode};
+}
+async function onFetch(force){
   const ses=getSession();
   if(!ses){updateAuthUI();addNotice("err","Log in with FYERS first.");return}
   const raw=parseTickers();
@@ -664,24 +703,30 @@ async function onFetch(){
   const syms=[...new Set(raw.map(normalizeSym))];
   const btn=$("fetchBtn");btn.disabled=true;btn.textContent="Fetching...";
   const freq=$("freq").value,years=+$("years").value;
-  const endIso=istToday(),start=new Date(Date.now()+19800000-Math.round(years*365.25*864e5)).toISOString().slice(0,10);
+  const today=istToday(),endIso=addDays(today,-1);
+  const start=addDays(today,-Math.round(years*365.25));
   const st=syms.map(x=>({sym:x,cls:"wait",text:"waiting"}));showStatus(st);
-  const ok=[];let authFail=false,idx=0;
+  const ok=[];let authFail=false,idx=0,newCount=0,savedCount=0;
   async function worker(){
     while(idx<syms.length){
-      const i=idx++;st[i]={sym:syms[i],cls:"wait",text:"loading"};showStatus(st);
+      const i=idx++;
+      let made=0;
       try{
-        const rows=await getDaily(syms[i],start,endIso,ses.token);
-        const series=resampleDaily(rows,freq,endIso);
+        st[i]={sym:syms[i],cls:"wait",text:"checking saved data"};showStatus(st);
+        const r=await ensureDaily(syms[i],start,endIso,ses.token,force===true);
+        made=r.requests;
+        const series=resampleDaily(r.rows,freq,today);
         if(series.length<4)throw new Error("fewer than 4 prices came back");
-        st[i]={sym:syms[i],cls:"ok",text:series.length+" "+freq+" prices"};
+        const note=r.mode==="saved"?"from saved data, no request":r.mode==="updated"?"added "+r.fetched+" new daily prices":"fetched "+r.rows.length+" daily prices";
+        if(r.mode==="saved")savedCount++;else newCount++;
+        st[i]={sym:syms[i],cls:"ok",text:series.length+" "+freq+" prices, "+note};
         ok.push({sym:syms[i],series});
       }catch(e){
         if(e.auth)authFail=true;
         st[i]={sym:syms[i],cls:"fail",text:e.message};
       }
       showStatus(st);
-      await sleep(400);
+      if(made)await sleep(400);
     }
   }
   await Promise.all([worker(),worker()]);
@@ -692,6 +737,7 @@ async function onFetch(){
     ok.sort((a,b)=>syms.indexOf(a.sym)-syms.indexOf(b.sym));
     const al=alignToReturns(ok);
     setData(ok.map(o=>o.sym),al.R,al.dates,"fyers","FYERS, "+freq+", "+al.R.length+" returns, "+al.first+" to "+al.dates[al.dates.length-1],freq);
+    if(savedCount)queueNotice("info","Requested "+newCount+" of "+ok.length+" symbols from FYERS. "+savedCount+" came from data saved in this browser.");
     if(ok.length<syms.length)queueNotice("warn","Left out: "+syms.filter(x=>!ok.some(o=>o.sym===x)).join(", ")+".");
   }catch(e){addNotice("err",e.message)}
 }
@@ -927,7 +973,8 @@ $("freq").addEventListener("change",()=>{
   if(S.R&&S.source!=="example"){S.freq=$("freq").value;schedule(false)}
 });
 $("loginBtn").addEventListener("click",onLogin);
-$("fetchBtn").addEventListener("click",onFetch);
+$("fetchBtn").addEventListener("click",()=>onFetch(false));
+$("refetchBtn").addEventListener("click",()=>onFetch(true));
 $("exampleBtn").addEventListener("click",loadExample);
 $("csvLoad").addEventListener("click",()=>loadCSV($("csvText").value));
 $("csvFile").addEventListener("change",e=>{

@@ -22,6 +22,8 @@ A mean-variance optimizer that runs in the browser, with price history pulled fr
 ## Each trading day
 Open the site, click **Log in with FYERS**, sign in, and you land back on the page connected. Enter symbols and click **Fetch from FYERS**. A plain name such as `RELIANCE` means `NSE:RELIANCE-EQ`.
 
+Daily prices are saved in your browser. Adding a symbol and clicking Fetch requests only the new symbol; changing the frequency requests nothing; a longer history or a new trading day requests only the missing days. **Re-fetch all listed symbols** ignores the saved data. Today's candle is left out until the next day so a half-finished day never gets saved.
+
 ## Notes
 - FYERS tokens last one trading day, so one login click per day is needed.
 - Weekly and monthly prices are the last close of each period. Whether FYERS prices reflect dividends was not verified, so check before relying on total-return estimates.
