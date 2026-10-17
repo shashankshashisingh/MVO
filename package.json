@@ -1,0 +1,7 @@
+{
+  "name": "mvo",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Mean-variance optimizer with FYERS price history",
+  "engines": { "node": "22.x" }
+}

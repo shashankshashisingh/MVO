@@ -1,4 +1,4 @@
-<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>:root{color-scheme:light}body{margin:0}[hidden]{display:none!important}</style></head><body>
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><style>:root{color-scheme:light}body{margin:0}[hidden]{display:none!important}</style></head><body>
 <title>Mean-Variance Optimizer</title>
 <meta name="claude:viewport-fit-sides" content="cover">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Instrument+Sans:wght@400;500;600&display=swap">
@@ -59,6 +59,13 @@ details>*+*{margin-top:8px}
 .cmd{margin:0;font-family:var(--font-num);font-size:12px;line-height:1.5;background:var(--bg);border:1px solid var(--line);border-radius:4px;padding:8px 10px;white-space:pre-wrap;word-break:break-all;user-select:all}
 .steps{margin:0;padding-left:18px;font-size:13px;display:flex;flex-direction:column;gap:6px}
 .steps code,.hint code{font-family:var(--font-num);font-size:12px;background:var(--bg);padding:1px 4px;border-radius:3px}
+.status{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:4px;font-size:12.5px}
+.status li{display:flex;gap:8px;align-items:baseline}
+.status .dot{width:8px;height:8px;border-radius:50%;flex:none}
+.status .ok .dot{background:var(--good)}
+.status .fail .dot{background:var(--bad)}
+.status .wait .dot{background:var(--muted)}
+.status .why{color:var(--muted)}
 .hint{font-size:12px;color:var(--muted);margin:0}
 .msgs{display:flex;flex-direction:column;gap:8px}
 .msg{border:1px solid var(--line);border-left:3px solid var(--warn);background:var(--surface);padding:9px 12px;border-radius:4px;font-size:13px}
@@ -140,27 +147,16 @@ table{border-collapse:collapse;width:100%}
           <div class="f"><label for="freq">Frequency</label>
             <select id="freq"><option value="daily">Daily</option><option value="weekly">Weekly</option><option value="monthly" selected>Monthly</option></select></div>
         </div>
-        <div class="f">
-          <span class="lbl">Step 1. Run this on your computer</span>
-          <pre id="cmd" class="cmd"></pre>
-          <button id="copyCmd" class="btn ghost small" type="button">Copy command</button>
-        </div>
-        <details id="setup">
-          <summary>First time? Set up FYERS access</summary>
-          <ol class="steps">
-            <li>Create an app at myapi.fyers.in and note its app ID, secret and redirect URL.</li>
-            <li>Install the SDK: <code>pip install fyers-apiv3</code></li>
-            <li>Set <code>FYERS_CLIENT_ID</code>, <code>FYERS_SECRET_KEY</code> and <code>FYERS_REDIRECT_URI</code> in your terminal.</li>
-            <li>Once each trading day run <code>python3 fetch_fyers.py --login</code>, sign in, and paste back the address you land on.</li>
-          </ol>
-          <p class="hint">fetch_fyers.py asks FYERS for daily candles in windows of 365 days and builds weekly or monthly prices from the last close of each period.</p>
-        </details>
-        <div class="f"><label for="csvFile">Step 2. Load the prices.csv it writes</label><input id="csvFile" type="file" accept=".csv,.txt,text/csv,text/plain"></div>
+        <p id="fyAuth" class="hint">Checking FYERS connection...</p>
+        <button id="loginBtn" class="btn" type="button" hidden>Log in with FYERS</button>
+        <button id="fetchBtn" class="btn" type="button" hidden>Fetch from FYERS</button>
+        <ul id="fetchStatus" class="status" aria-live="polite"></ul>
         <details id="csvBox">
-          <summary>Or paste CSV rows</summary>
+          <summary>Or load a CSV instead</summary>
           <div class="f"><label for="csvMode">The CSV contains</label>
             <select id="csvMode"><option value="prices">Prices (first column is the date)</option><option value="ret">Returns as decimals (0.012)</option><option value="pct">Returns in percent (1.2)</option></select></div>
-          <div class="f"><label for="csvText">Rows with a header line</label>
+          <div class="f"><label for="csvFile">File</label><input id="csvFile" type="file" accept=".csv,.txt,text/csv,text/plain"></div>
+          <div class="f"><label for="csvText">Or paste rows with a header line</label>
             <textarea id="csvText" rows="5" spellcheck="false" placeholder="Date,NSE:RELIANCE-EQ,NSE:TCS-EQ&#10;2024-01,2650.1,3820.4&#10;2024-02,2891.3,4012.8"></textarea></div>
           <button id="csvLoad" class="btn ghost small" type="button">Use this data</button>
           <p class="hint">Daily, weekly or monthly is detected from the dates. Oldest row first or last both work.</p>
@@ -468,6 +464,43 @@ function inferFreq(dates){
   return null;
 }
 
+/* ---------- daily candles to period prices ---------- */
+function isoWeekStart(iso){
+  const d=new Date(iso+"T00:00:00Z"),day=(d.getUTCDay()+6)%7;
+  d.setUTCDate(d.getUTCDate()-day);
+  return d.toISOString().slice(0,10);
+}
+function periodKey(iso,freq){
+  if(freq==="monthly")return iso.slice(0,7);
+  if(freq==="weekly")return isoWeekStart(iso);
+  return iso;
+}
+function candleDate(epoch){return new Date((epoch+19800)*1000).toISOString().slice(0,10)}
+function resampleDaily(rows,freq,todayIso){
+  const sorted=rows.slice().sort((a,b)=>a[0]<b[0]?-1:a[0]>b[0]?1:0);
+  const nowKey=periodKey(todayIso,freq),m=new Map();
+  for(const[d,p]of sorted){
+    if(!(p>0))continue;
+    const k=periodKey(d,freq);
+    if(freq!=="daily"&&k===nowKey)continue;
+    m.set(k,p);
+  }
+  return[...m.entries()];
+}
+function alignToReturns(items){
+  let keys=null;
+  const maps=items.map(it=>new Map(it.series));
+  for(const mp of maps){
+    const ks=[...mp.keys()];
+    keys=keys===null?new Set(ks):new Set(ks.filter(k=>keys.has(k)));
+  }
+  const dates=[...keys].sort();
+  if(dates.length<4)throw new Error("The symbols share fewer than 4 common dates. Try a longer history or different symbols.");
+  const R=[];
+  for(let t=1;t<dates.length;t++)R.push(maps.map(mp=>mp.get(dates[t])/mp.get(dates[t-1])-1));
+  return{dates:dates.slice(1),R,first:dates[0]};
+}
+
 /* ---------- CSV ---------- */
 function parseCSV(text,mode){
   const lines=text.split(/\r?\n/).filter(l=>l.trim().length);
@@ -538,20 +571,129 @@ function loadExample(){
   setData(e.assets,e.R,e.dates,"example","Synthetic example data, monthly, "+e.R.length+" returns","monthly");
 }
 
-/* ---------- FYERS download command ---------- */
+/* ---------- FYERS (through this site's /api/fyers) ---------- */
 function parseTickers(){
   const seen=new Set(),out=[];
   for(const t of $("tickers").value.split(/[\s,;]+/)){
-    const s=t.trim();if(s&&!seen.has(s.toUpperCase())){seen.add(s.toUpperCase());out.push(s)}
+    const x=t.trim();if(x&&!seen.has(x.toUpperCase())){seen.add(x.toUpperCase());out.push(x)}
   }
   return out.slice(0,40);
 }
-const shq=s=>/^[A-Za-z0-9:_.\-]+$/.test(s)?s:"'"+s.replace(/'/g,"'\\''")+"'";
-function buildCmd(){
-  const syms=parseTickers();
-  const el=$("cmd");
-  if(syms.length<2){el.textContent="Enter at least two symbols above.";return}
-  el.textContent="python3 fetch_fyers.py "+syms.map(shq).join(" ")+" --years "+$("years").value+" --freq "+$("freq").value+" --out prices.csv";
+const normalizeSym=x=>{const u=x.trim().toUpperCase();return u.includes(":")?u:"NSE:"+u+"-EQ"};
+const FY_KEY="mvo_fyers_session",istToday=()=>new Date(Date.now()+19800000).toISOString().slice(0,10);
+let memSession=null;
+function getSession(){
+  if(memSession&&memSession.day===istToday())return memSession;
+  try{const t=JSON.parse(sessionStorage.getItem(FY_KEY)||"null");if(t&&t.day===istToday()){memSession=t;return t}}catch(e){}
+  return null;
+}
+function setSession(tok){
+  memSession={token:tok,day:istToday()};
+  try{sessionStorage.setItem(FY_KEY,JSON.stringify(memSession))}catch(e){}
+}
+function clearSession(){memSession=null;try{sessionStorage.removeItem(FY_KEY)}catch(e){}}
+let fyReady=false;
+async function api(path,opts){
+  const r=await fetch(path,opts);
+  let j=null;try{j=await r.json()}catch(e){}
+  if(!r.ok)throw new Error((j&&j.error)||"Request failed (HTTP "+r.status+")");
+  return j;
+}
+function updateAuthUI(){
+  const ses=getSession();
+  $("loginBtn").hidden=!fyReady||!!ses;
+  $("fetchBtn").hidden=!fyReady||!ses;
+}
+async function initFyers(){
+  const p=new URLSearchParams(location.search),code=p.get("auth_code");
+  if(code){
+    history.replaceState(null,"",location.pathname);
+    try{
+      const j=await api("/api/fyers?action=token",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({auth_code:code})});
+      setSession(j.accessToken);
+      queueNotice("info","Logged in to FYERS for today.");
+    }catch(e){queueNotice("err","FYERS login failed: "+e.message)}
+  }else if(p.get("s")==="error"){
+    history.replaceState(null,"",location.pathname);
+    queueNotice("err","FYERS login was not completed.");
+  }
+  try{
+    await api("/api/fyers?action=config");
+    fyReady=true;
+    $("fyAuth").textContent=getSession()?"Connected to FYERS for today.":"Log in once each trading day to fetch prices.";
+  }catch(e){
+    $("fyAuth").textContent="FYERS fetch is not available here: "+e.message+" You can still load a CSV below.";
+  }
+  updateAuthUI();
+  if(code||p.get("s")==="error")schedule(false);
+}
+async function onLogin(){
+  try{
+    const j=await api("/api/fyers?action=config");
+    location.href=j.loginUrl;
+  }catch(e){addNotice("err",e.message)}
+}
+function showStatus(items){
+  $("fetchStatus").innerHTML=items.map(i=>'<li class="'+i.cls+'"><span class="dot"></span><span><b>'+esc(i.sym)+'</b> '+(i.text?'<span class="why">'+esc(i.text)+'</span>':'')+'</span></li>').join("");
+}
+const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+async function getDaily(sym,startIso,endIso,token){
+  const rows=[];
+  let cur=new Date(startIso+"T00:00:00Z");
+  const end=new Date(endIso+"T00:00:00Z");
+  while(cur<=end){
+    const stop=new Date(Math.min(cur.getTime()+364*864e5,end.getTime()));
+    const j=await api("/api/fyers?action=history&symbol="+encodeURIComponent(sym)+"&from="+cur.toISOString().slice(0,10)+"&to="+stop.toISOString().slice(0,10),{headers:{"x-fyers-token":token}});
+    if(j.s!=="ok"){
+      const msg=j.message||"request failed";
+      const err=new Error(msg);
+      if(/token|expired|authori[sz]/i.test(msg))err.auth=true;
+      throw err;
+    }
+    for(const c of j.candles||[])if(c[4]>0)rows.push([candleDate(c[0]),+c[4]]);
+    cur=new Date(stop.getTime()+864e5);
+    if(cur<=end)await sleep(400);
+  }
+  return rows;
+}
+async function onFetch(){
+  const ses=getSession();
+  if(!ses){updateAuthUI();addNotice("err","Log in with FYERS first.");return}
+  const raw=parseTickers();
+  if(raw.length<2){showStatus([{sym:"",cls:"fail",text:"Enter at least two symbols."}]);return}
+  const syms=[...new Set(raw.map(normalizeSym))];
+  const btn=$("fetchBtn");btn.disabled=true;btn.textContent="Fetching...";
+  const freq=$("freq").value,years=+$("years").value;
+  const endIso=istToday(),start=new Date(Date.now()+19800000-Math.round(years*365.25*864e5)).toISOString().slice(0,10);
+  const st=syms.map(x=>({sym:x,cls:"wait",text:"waiting"}));showStatus(st);
+  const ok=[];let authFail=false,idx=0;
+  async function worker(){
+    while(idx<syms.length){
+      const i=idx++;st[i]={sym:syms[i],cls:"wait",text:"loading"};showStatus(st);
+      try{
+        const rows=await getDaily(syms[i],start,endIso,ses.token);
+        const series=resampleDaily(rows,freq,endIso);
+        if(series.length<4)throw new Error("fewer than 4 prices came back");
+        st[i]={sym:syms[i],cls:"ok",text:series.length+" "+freq+" prices"};
+        ok.push({sym:syms[i],series});
+      }catch(e){
+        if(e.auth)authFail=true;
+        st[i]={sym:syms[i],cls:"fail",text:e.message};
+      }
+      showStatus(st);
+      await sleep(400);
+    }
+  }
+  await Promise.all([worker(),worker()]);
+  btn.disabled=false;btn.textContent="Fetch from FYERS";
+  if(authFail){clearSession();updateAuthUI();$("fyAuth").textContent="Your FYERS login has expired. Log in again.";addNotice("err","FYERS rejected the login token. Log in again.");return}
+  if(ok.length<2){addNotice("err","Fewer than two symbols returned data, so there is nothing to optimize yet.");return}
+  try{
+    ok.sort((a,b)=>syms.indexOf(a.sym)-syms.indexOf(b.sym));
+    const al=alignToReturns(ok);
+    setData(ok.map(o=>o.sym),al.R,al.dates,"fyers","FYERS, "+freq+", "+al.R.length+" returns, "+al.first+" to "+al.dates[al.dates.length-1],freq);
+    if(ok.length<syms.length)queueNotice("warn","Left out: "+syms.filter(x=>!ok.some(o=>o.sym===x)).join(", ")+".");
+  }catch(e){addNotice("err",e.message)}
 }
 
 /* ---------- CSV handlers ---------- */
@@ -559,7 +701,7 @@ function loadCSV(text){
   try{
     const p=parseCSV(text,$("csvMode").value);
     const sel=$("freq").value,det=inferFreq(p.dates),freq=det||sel;
-    $("freq").value=freq;buildCmd();
+    $("freq").value=freq;
     setData(p.assets,p.R,p.dates,"csv","CSV upload, "+freq+", "+p.R.length+" returns, "+p.dates[0]+" to "+p.dates[p.dates.length-1],freq);
     if(det&&det!==sel)queueNotice("info","The dates look "+det+", so the frequency was set to "+det+". Change it in the Frequency box if that is wrong.");
     if(p.skipped)queueNotice("warn",p.skipped+" row(s) were skipped because they were not fully numeric.");
@@ -781,17 +923,11 @@ $("shorts").addEventListener("change",()=>{
   if(!$("shorts").checked&&parseFloat(lb.value)<0)lb.value="0";
   schedule(false);
 });
-["tickers","years"].forEach(id=>$(id).addEventListener("input",buildCmd));
 $("freq").addEventListener("change",()=>{
-  buildCmd();
   if(S.R&&S.source!=="example"){S.freq=$("freq").value;schedule(false)}
 });
-$("copyCmd").addEventListener("click",async()=>{
-  const btn=$("copyCmd"),txt=$("cmd").textContent;
-  try{await navigator.clipboard.writeText(txt);btn.textContent="Copied"}
-  catch(e){const r=document.createRange();r.selectNodeContents($("cmd"));const sel=getSelection();sel.removeAllRanges();sel.addRange(r);btn.textContent="Selected, press copy"}
-  setTimeout(()=>{btn.textContent="Copy command"},1800);
-});
+$("loginBtn").addEventListener("click",onLogin);
+$("fetchBtn").addEventListener("click",onFetch);
 $("exampleBtn").addEventListener("click",loadExample);
 $("csvLoad").addEventListener("click",()=>loadCSV($("csvText").value));
 $("csvFile").addEventListener("change",e=>{
@@ -819,8 +955,8 @@ $("copyBtn").addEventListener("click",async()=>{
   setTimeout(()=>{btn.textContent="Copy weights as CSV"},1600);
 });
 
-buildCmd();
 loadExample();
+initFyers();
 })();
 </script>
 
