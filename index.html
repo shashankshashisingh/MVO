@@ -11,6 +11,9 @@
   --font-ui:"Instrument Sans",system-ui,-apple-system,"Segoe UI",sans-serif;
   --font-num:"IBM Plex Mono",ui-monospace,SFMono-Regular,Menlo,monospace;
 }
+.top-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap;justify-content:flex-end}
+.theme-btn{font:inherit;font-size:12px;font-weight:600;color:var(--ink);background:var(--surface);border:1px solid var(--line);border-radius:4px;padding:7px 10px;cursor:pointer;white-space:nowrap}
+.theme-btn:hover{border-color:var(--accent);color:var(--accent)}
 @media (prefers-color-scheme: dark){
   :root:not([data-theme="light"]){
     --bg:#0e1514; --surface:#162120; --ink:#e5eeea; --ink2:#a8b8b2; --muted:#8a9b95; --line:#273633;
@@ -129,7 +132,7 @@ table{border-collapse:collapse;width:100%}
       <h1>Mean-Variance Optimizer</h1>
       <p class="sub">Load price history from FYERS, estimate returns and covariance, then find the portfolio that fits your objective and limits.</p>
     </div>
-    <div id="srcBadge" class="badge"></div>
+    <div class="top-actions"><button id="themeToggle" class="theme-btn" type="button" aria-label="Switch color theme">☾ Dark mode</button><div id="srcBadge" class="badge"></div></div>
   </header>
 
   <div class="app">
@@ -250,6 +253,28 @@ table{border-collapse:collapse;width:100%}
 "use strict";
 
 //#core-start
+const themeToggle=$("themeToggle");
+function effectiveTheme(){
+  const explicit=document.documentElement.getAttribute("data-theme");
+  return explicit||(window.matchMedia&&window.matchMedia("(prefers-color-scheme: dark)").matches?"dark":"light");
+}
+function updateThemeButton(){
+  const dark=effectiveTheme()==="dark";
+  themeToggle.textContent=dark?"☀ Light mode":"☾ Dark mode";
+  themeToggle.setAttribute("aria-label",dark?"Switch to light mode":"Switch to dark mode");
+  themeToggle.setAttribute("aria-pressed",String(dark));
+}
+try{
+  const savedTheme=localStorage.getItem("mvo-theme");
+  if(savedTheme==="light"||savedTheme==="dark")document.documentElement.setAttribute("data-theme",savedTheme);
+}catch(e){}
+updateThemeButton();
+themeToggle.addEventListener("click",()=>{
+  const next=effectiveTheme()==="dark"?"light":"dark";
+  document.documentElement.setAttribute("data-theme",next);
+  try{localStorage.setItem("mvo-theme",next)}catch(e){}
+  updateThemeButton();
+});
 const PPY={daily:252,weekly:52,monthly:12};
 function dot(a,b){let s=0;for(let i=0;i<a.length;i++)s+=a[i]*b[i];return s}
 function sum(a){let s=0;for(const v of a)s+=v;return s}
