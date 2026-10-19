@@ -253,7 +253,7 @@ table{border-collapse:collapse;width:100%}
 "use strict";
 
 //#core-start
-const themeToggle=$("themeToggle");
+const themeToggle=document.getElementById("themeToggle");
 function effectiveTheme(){
   const explicit=document.documentElement.getAttribute("data-theme");
   return explicit||(window.matchMedia&&window.matchMedia("(prefers-color-scheme: dark)").matches?"dark":"light");
